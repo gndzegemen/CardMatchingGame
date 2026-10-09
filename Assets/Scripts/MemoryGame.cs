@@ -1,12 +1,9 @@
-﻿// MemoryGame.cs
-using System.Collections;
+// MemoryGame.cs
 using System.Collections.Generic;
 using UnityEngine;
 using DG.Tweening;
+using TMPro;
 using UnityEngine.UI;
-using static UnityEngine.GraphicsBuffer;
-using System.Xml.Serialization;
-using Unity.VisualScripting.Antlr3.Runtime.Tree;
 
 public class MemoryGame : MonoBehaviour
 {
@@ -35,99 +32,95 @@ public class MemoryGame : MonoBehaviour
     public float checkDelay = 1f;
     public float firstRevealTimeout = 3f;
 
-    private List<string> idList = new List<string>();
-    public List<GridElement> cards = new List<GridElement>();
-    public Stack<GridElement> revealCards = new Stack<GridElement>();
-    public bool canReveal = true;
-
+    [Header("Sayfalar")]
+    public GameObject StartPage;
     public GameObject MainPage;
     public GameObject FinishPage;
 
     public GameObject ResetButton;
 
-    private Coroutine firstRevealTimeoutCoroutine;
+    [Header("Multiplayer")]
+    public MultiplayerMenu multiplayerMenu;
+    [Tooltip("Oyun sırasında sıra ve skoru gösteren yazı")]
+    public TMP_Text statusText;
+    [Tooltip("Bitiş sayfasında sonucu gösteren yazı")]
+    public TMP_Text resultText;
 
-    
+    private readonly List<GridElement> cards = new List<GridElement>();
+    private Sequence dealSequence;
+    private bool boardReady;
+    private string statusMessage;
 
-    public void SetupGame()
+    // Oyun sadece iki oyunculu online oturumda oynanır
+    private NetworkMemorySession session;
+
+    public bool IsOnline => session != null;
+
+    // Tüm kartların dağıtılması için geçen süre
+    public float DealTotalDuration => ElementNumber / 2 * 2 * (dealDuration + dealStagger);
+
+    void Awake()
     {
-        idList.Clear();
+        SetStatus(null);
+        SetResult(null);
+    }
+
+    // Yeniden başlatma isteği; tur iki oyuncu da isteyince başlar
+    public void ResetGame()
+    {
+        if (IsOnline)
+            session.RequestRestart();
+    }
+
+    void BuildBoard(int[] layout)
+    {
+        KillDealSequence();
+
+        // Sahnedeki eski kartları temizle
+        foreach (Transform child in Parent)
+        {
+            child.gameObject.SetActive(false);
+            Destroy(child.gameObject);
+        }
         cards.Clear();
-        revealCards.Clear();
-        canReveal = true;
+        boardReady = false;
 
-        if (firstRevealTimeoutCoroutine != null)
-        {
-            StopCoroutine(firstRevealTimeoutCoroutine);
-            firstRevealTimeoutCoroutine = null;
-        }
+        ShowPage(MainPage);
 
-        
-
-        GenerateIDPairs();
-        Shuffle(idList);
-        SpawnGridElements();
-    }
-
-    void GenerateIDPairs()
-    {
-        int pairCount = ElementNumber / 2;
-        for (int i = 0; i < pairCount; i++)
-        {
-            string id = System.Guid.NewGuid().ToString();
-            idList.Add(id);
-            idList.Add(id);
-        }
-    }
-
-    void Shuffle(List<string> list)
-    {
-        for (int i = 0; i < list.Count; i++)
-        {
-            int randIndex = Random.Range(i, list.Count);
-            (list[i], list[randIndex]) = (list[randIndex], list[i]);
-        }
-    }
-
-    void SpawnGridElements()
-    {
-        for (int i = 0; i < ElementNumber; i++)
+        Sprite[] cardSprites = Resources.LoadAll<Sprite>("CardIcons");
+        for (int i = 0; i < layout.Length; i++)
         {
             GameObject go = Instantiate(GridElementPrefab, Parent);
             var element = go.GetComponent<GridElement>();
-            element.ID = idList[i];
+            element.Index = i;
+            element.PairId = layout[i];
             element.memoryGame = this;
+            if (cardSprites.Length > 0)
+                element.image.sprite = cardSprites[layout[i] % cardSprites.Length];
             element.ChangeStatusAsEmpty(); // Başlangıçta empty (görünmez)
-            element.isReveal = false;
-            element.CurrentState = GridElement.State.Empty;
             cards.Add(element);
         }
 
-        
-
+        // Dağıtma animasyonu kartların grid'deki konumlarını kullanıyor
+        LayoutRebuilder.ForceRebuildLayoutImmediate(Parent);
+        RefreshInteractable();
         DealAnimation();
     }
-
-    
 
     void DealAnimation()
     {
         deckTransform.gameObject.SetActive(true);
         ResetButton.SetActive(false);
-        
 
-        Sequence seq = DOTween.Sequence();
+        dealSequence = DOTween.Sequence();
 
         for (int i = 0; i < cards.Count; i++)
         {
-            int index = i; // Closure için gerekli
-            RectTransform cardRect = cards[i].GetComponent<RectTransform>();
+            GridElement card = cards[i];
+            RectTransform cardRect = card.GetComponent<RectTransform>();
 
-            
-
-            seq.AppendCallback(() => {
+            dealSequence.AppendCallback(() => {
                 // Deste pozisyonundan kart pozisyonuna git
-
                 PlayCardDealSound();
 
                 dealCardTransform.position = deckTransform.position;
@@ -135,28 +128,39 @@ public class MemoryGame : MonoBehaviour
                 dealCardTransform.DOMove(cardRect.position, dealDuration)
                     .OnComplete(() => {
                         // Kart görünür hale getir
-                        cards[index].ChangeStatusAsBack();
-
+                        if (card != null && card.CurrentState == GridElement.State.Empty)
+                            card.ChangeStatusAsBack();
                     });
             });
 
-            seq.AppendInterval(dealDuration + dealStagger);
+            dealSequence.AppendInterval(dealDuration + dealStagger);
         }
 
-        seq.OnComplete(() => {
+        dealSequence.OnComplete(() => {
+            dealSequence = null;
             deckTransform.gameObject.SetActive(false);
             ResetButton.SetActive(true);
-
-            dealCardTransform.position = dealCardTransform.position;
-            LoadImages();
+            boardReady = true;
+            SetStatus(statusMessage);
+            RefreshInteractable();
         });
+    }
+
+    void KillDealSequence()
+    {
+        if (dealSequence != null)
+        {
+            dealSequence.Kill();
+            dealSequence = null;
+        }
+        dealCardTransform.DOKill();
     }
 
     void PlayCardDealSound()
     {
         if (audioSource != null)
         {
-            GetComponent<AudioSource>().clip = dealCardSound;
+            audioSource.clip = dealCardSound;
             audioSource.Play();
         }
     }
@@ -165,202 +169,133 @@ public class MemoryGame : MonoBehaviour
     {
         if (audioSource != null)
         {
-            GetComponent<AudioSource>().clip = matchSound;
+            audioSource.clip = matchSound;
             audioSource.Play();
         }
     }
 
-    
-
-    void LoadImages()
+    public void OnCardClicked(GridElement card)
     {
-        Sprite[] cardSprites = Resources.LoadAll<Sprite>("CardIcons");
-
-        // ID'leri benzersiz olarak topla
-        List<string> uniqueIDs = new List<string>();
-        foreach (var card in cards)
-        {
-            if (!uniqueIDs.Contains(card.ID))
-            {
-                uniqueIDs.Add(card.ID);
-            }
-        }
-
-        // Her benzersiz ID için bir resim indexi belirle
-        Dictionary<string, Sprite> idToSprite = new Dictionary<string, Sprite>();
-        for (int i = 0; i < uniqueIDs.Count; i++)
-        {
-            if (i < cardSprites.Length)
-            {
-                idToSprite[uniqueIDs[i]] = cardSprites[i];
-            }
-            else
-            {
-                // Eğer yeterli resim yoksa, mevcut resimleri tekrar kullan
-                idToSprite[uniqueIDs[i]] = cardSprites[i % cardSprites.Length];
-            }
-        }
-
-        // Her karta ID'sine göre resim ata
-        foreach (var card in cards)
-        {
-            if (idToSprite.ContainsKey(card.ID))
-            {
-                card.image.sprite = idToSprite[card.ID];
-            }
-        }
+        if (boardReady && IsOnline && session.CanLocalPlayerReveal)
+            session.RequestReveal(card.Index);
     }
 
-    void GoToURL(string url)
+    // --- Görsel güncellemeler ---
+
+    public void ShowFront(int index)
     {
-        // URL'nin geçerli olup olmadığını kontrol et
-        if (string.IsNullOrEmpty(url))
-        {
-            Debug.LogWarning("URL boş veya null!");
-            return;
-        }
-
-        // URL'nin http veya https ile başlayıp başlamadığını kontrol et
-        if (!url.StartsWith("http://") && !url.StartsWith("https://"))
-        {
-            url = "https://" + url;
-            Debug.Log("URL'ye https:// eklendi: " + url);
-        }
-
-        try
-        {
-            // URL'yi varsayılan tarayıcıda aç
-            Application.OpenURL(url);
-            Debug.Log("URL açılıyor: " + url);
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogError("URL açılırken hata oluştu: " + e.Message);
-        }
+        if (IsValidCard(index))
+            cards[index].ChangeStatusAsFront();
     }
 
-    public void GoToDonate()
+    public void ShowBack(int index)
     {
-        GoToURL("https://www.stjude.org/donate/donate-to-st-jude.html");
+        if (IsValidCard(index))
+            cards[index].ChangeStatusAsBack();
     }
 
-
-    public void RegisterReveal(GridElement card)
+    public void ApplyPairResult(int first, int second, bool matched)
     {
-        if (!canReveal || card.isReveal) return;
+        if (!IsValidCard(first) || !IsValidCard(second)) return;
 
-        card.ChangeStatusAsFront();
-        card.isReveal = true;
-        revealCards.Push(card);
-
-        if (revealCards.Count == 1)
-        {
-            firstRevealTimeoutCoroutine = StartCoroutine(FirstRevealTimeout());
-        }
-        else if (revealCards.Count == 2)
-        {
-            if (firstRevealTimeoutCoroutine != null)
-            {
-                StopCoroutine(firstRevealTimeoutCoroutine);
-                firstRevealTimeoutCoroutine = null;
-            }
-            StartCoroutine(CheckMatch());
-        }
-    }
-
-    IEnumerator FirstRevealTimeout()
-    {
-        yield return new WaitForSeconds(firstRevealTimeout);
-
-        // Eğer hâlâ tek kart açıksa, kapat
-        if (revealCards.Count == 1)
-        {
-            var first = revealCards.Pop();
-            first.ChangeStatusAsBack();
-            first.isReveal = false;
-            // Buton etkileşimini geri aç (eğer devre dışı kaldıysa)
-            if (first.button != null)
-                first.button.interactable = true;
-        }
-
-        firstRevealTimeoutCoroutine = null;
-    }
-
-    private IEnumerator CheckMatch()
-    {
-        canReveal = false;
-
-        // Tüm butonları etkileşime kapat
-        foreach (var c in cards)
-            c.button.interactable = false;
-
-        // Bekle (animasyon için zaman)
-        yield return new WaitForSeconds(checkDelay);
-
-        // İki kartı al
-        var first = revealCards.Pop();
-        var second = revealCards.Pop();
-
-        if (first.ID == second.ID)
+        if (matched)
         {
             // Eşleşme: boş slot yap
-            first.ChangeStatusAsEmpty();
-            second.ChangeStatusAsEmpty();
-
-            cards.Remove(first);
-            cards.Remove(second);
-
+            cards[first].ChangeStatusAsEmpty();
+            cards[second].ChangeStatusAsEmpty();
             PlayCardMatchSound();
-
-            if (cards.Count == 0)
-            {
-                MainPage.gameObject.SetActive(false);
-                FinishPage.gameObject.SetActive(true);
-                
-            }
         }
         else
         {
             // Eşleşmez: geri kapat
-            first.ChangeStatusAsBack();
-            second.ChangeStatusAsBack();
-            first.isReveal = false;
-            second.isReveal = false;
+            cards[first].ChangeStatusAsBack();
+            cards[second].ChangeStatusAsBack();
         }
-
-        // Sadece hâlâ kapalı (empty olmayan) kartlara izin ver
-        foreach (var c in cards)
-            if (!c.isReveal && c.CurrentState != GridElement.State.Empty)
-                c.button.interactable = true;
-
-        canReveal = true;
     }
 
-    public void ResetGame()
+    public void ShowFinish()
     {
-        if (firstRevealTimeoutCoroutine != null)
-        {
-            StopCoroutine(firstRevealTimeoutCoroutine);
-            firstRevealTimeoutCoroutine = null;
-        }
+        ShowPage(FinishPage);
+    }
 
-        // Sahnedeki eski kartları temizle
+    // Sadece kapalı kartlara ve sırası gelen oyuncuya izin ver
+    public void RefreshInteractable()
+    {
+        bool allow = boardReady && IsOnline && session.CanLocalPlayerReveal;
+
+        foreach (var card in cards)
+            card.button.interactable = allow && card.CurrentState == GridElement.State.Back;
+    }
+
+    bool IsValidCard(int index)
+    {
+        return index >= 0 && index < cards.Count && cards[index] != null;
+    }
+
+    void ShowPage(GameObject page)
+    {
+        StartPage.SetActive(page == StartPage);
+        MainPage.SetActive(page == MainPage);
+        FinishPage.SetActive(page == FinishPage);
+    }
+
+    // Kartlar dağıtılırken deste yazının üstüne geldiği için yazı dağıtım bitince görünür
+    public void SetStatus(string text)
+    {
+        statusMessage = text;
+        if (statusText == null) return;
+        statusText.text = text ?? "";
+        statusText.gameObject.SetActive(boardReady && !string.IsNullOrEmpty(text));
+    }
+
+    public void SetResult(string text)
+    {
+        if (resultText == null) return;
+        resultText.text = text ?? "";
+        resultText.gameObject.SetActive(!string.IsNullOrEmpty(text));
+    }
+
+    // --- Online mod ---
+
+    public void AttachSession(NetworkMemorySession networkSession)
+    {
+        session = networkSession;
+    }
+
+    public void DetachSession(NetworkMemorySession networkSession)
+    {
+        if (session == networkSession)
+            session = null;
+    }
+
+    public void BeginOnlineRound(int[] layout)
+    {
+        SetResult(null);
+        BuildBoard(layout);
+    }
+
+    // Bağlantı koptuğunda veya oyundan çıkıldığında başlangıç sayfasına dön
+    public void ShowStartPage()
+    {
+        KillDealSequence();
+        boardReady = false;
         foreach (Transform child in Parent)
             Destroy(child.gameObject);
-
-        // Yeniden kurulum
-        SetupGame();
+        cards.Clear();
+        deckTransform.gameObject.SetActive(false);
+        SetStatus(null);
+        SetResult(null);
+        ShowPage(StartPage);
     }
 
     public void QuitGame()
     {
-        // Oyun verilerini kaydet
-        // SaveGame();
-
-#if UNITY_EDITOR
-        UnityEditor.EditorApplication.isPlaying = false;
-#else
-        Application.Quit();
-#endif
+        // Online oyundan çık ve menüye dön
+        if (multiplayerMenu != null && multiplayerMenu.IsSessionRunning)
+        {
+            multiplayerMenu.Leave();
+            return;
+        }
+        ShowStartPage();
     }
 }
