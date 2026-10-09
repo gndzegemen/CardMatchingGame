@@ -7,7 +7,8 @@ public class GridElement : MonoBehaviour
 {
     public enum State { Back, Front, Empty }
 
-    public string ID;
+    public int Index;
+    public int PairId;
     public MemoryGame memoryGame;
 
     public AudioSource audioSource;
@@ -19,7 +20,6 @@ public class GridElement : MonoBehaviour
     public GameObject Empty;
     public Image image;
 
-    public bool isReveal = false;
     public State CurrentState = State.Back;
 
     void Start()
@@ -29,7 +29,7 @@ public class GridElement : MonoBehaviour
 
     void OnClick()
     {
-        memoryGame.RegisterReveal(this);
+        memoryGame.OnCardClicked(this);
     }
 
     public void ChangeStatusAsFront()
