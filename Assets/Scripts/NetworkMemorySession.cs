@@ -57,7 +57,7 @@ public class NetworkMemorySession : NetworkBehaviour
         score0.OnValueChanged += OnIntChanged;
         score1.OnValueChanged += OnIntChanged;
         roundActive.OnValueChanged += OnBoolChanged;
-        roundFinished.OnValueChanged += OnBoolChanged;
+        roundFinished.OnValueChanged += OnRoundFinishedChanged;
         restartVote0.OnValueChanged += OnBoolChanged;
         restartVote1.OnValueChanged += OnBoolChanged;
 
@@ -85,7 +85,7 @@ public class NetworkMemorySession : NetworkBehaviour
         score0.OnValueChanged -= OnIntChanged;
         score1.OnValueChanged -= OnIntChanged;
         roundActive.OnValueChanged -= OnBoolChanged;
-        roundFinished.OnValueChanged -= OnBoolChanged;
+        roundFinished.OnValueChanged -= OnRoundFinishedChanged;
         restartVote0.OnValueChanged -= OnBoolChanged;
         restartVote1.OnValueChanged -= OnBoolChanged;
 
@@ -101,6 +101,15 @@ public class NetworkMemorySession : NetworkBehaviour
 
     void OnSlotChanged(ulong previous, ulong current) => RefreshStatus();
     void OnIntChanged(int previous, int current) => RefreshStatus();
+
+    // Bitiş sayfası yalnızca tur bittiği anda açılır. Skorlar bu değişkenden önce tanımlı olduğu için
+    // aynı pakette ondan önce güncellenir. Rakip ayrılınca gelen sıfırlama ise sayfayı değiştirmez.
+    void OnRoundFinishedChanged(bool previous, bool current)
+    {
+        RefreshStatus();
+        if (current && !previous && IsClient && game != null)
+            game.ShowFinish();
+    }
     void OnBoolChanged(bool previous, bool current) => RefreshStatus();
 
     // --- Sunucu ---
@@ -229,11 +238,12 @@ public class NetworkMemorySession : NetworkBehaviour
         currentTurn.Value = rules.CurrentPlayer;
         PairResolvedRpc(result.First, result.Second, result.Matched);
 
+        // Bitiş sayfasını roundFinished açar (OnRoundFinishedChanged). Ayrı bir RPC
+        // skorlardan önce ulaşıp eski sonucu gösterebiliyordu.
         if (rules.IsFinished)
         {
             roundActive.Value = false;
             roundFinished.Value = true;
-            GameOverRpc();
             Debug.Log($"[SelfHosted] Round finished. Score: {rules.Scores[0]} - {rules.Scores[1]}");
         }
     }
@@ -291,19 +301,14 @@ public class NetworkMemorySession : NetworkBehaviour
     }
 
     [Rpc(SendTo.ClientsAndHost)]
-    void GameOverRpc()
-    {
-        game.ShowFinish();
-        RefreshStatus();
-    }
-
-    [Rpc(SendTo.ClientsAndHost)]
     void RoundAbortedRpc()
     {
         localRevealCount = 0;
-        game.ShowStartPage();
+        // Oturum açık kalır: kalan oyuncu lobide yeni rakip bekler
         if (game.multiplayerMenu != null)
-            game.multiplayerMenu.ShowMessage("Your opponent left. Waiting for a new opponent...");
+            game.multiplayerMenu.OnOpponentLeft();
+        else
+            game.ShowStartPage();
     }
 
     void RefreshStatus()

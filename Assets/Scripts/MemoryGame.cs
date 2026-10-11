@@ -37,6 +37,8 @@ public class MemoryGame : MonoBehaviour
     public GameObject StartPage;
     public GameObject MainPage;
     public GameObject FinishPage;
+    [Tooltip("Oda kurulurken ve rakip beklenirken gösterilen sayfa")]
+    public GameObject LobbyPage;
 
     public GameObject ResetButton;
 
@@ -87,6 +89,8 @@ public class MemoryGame : MonoBehaviour
     public void StartSinglePlayerTimed()
     {
         if (multiplayerMenu != null && multiplayerMenu.IsSessionRunning) return;
+        // Önceki bağlantı hatası menüye dönüldüğünde tekrar görünmesin
+        if (multiplayerMenu != null) multiplayerMenu.ShowMessage(null);
         StopSinglePlayer();
         session = null;
         singlePlayerRules = new MemoryRules(1);
@@ -372,6 +376,7 @@ public class MemoryGame : MonoBehaviour
         StartPage.SetActive(page == StartPage);
         MainPage.SetActive(page == MainPage);
         FinishPage.SetActive(page == FinishPage);
+        if (LobbyPage != null) LobbyPage.SetActive(page == LobbyPage);
     }
 
     // Kartlar dağıtılırken deste yazının üstüne geldiği için yazı dağıtım bitince görünür
@@ -383,10 +388,18 @@ public class MemoryGame : MonoBehaviour
         statusText.gameObject.SetActive(boardReady && !string.IsNullOrEmpty(text));
     }
 
+    // İlk satır başlık olarak büyük yazılır ("You win!"), kalanlar ayrıntıdır
     public void SetResult(string text)
     {
         if (resultText == null) return;
-        resultText.text = text ?? "";
+        if (string.IsNullOrEmpty(text))
+            resultText.text = "";
+        else
+        {
+            int lineEnd = text.IndexOf('\n');
+            resultText.text = lineEnd < 0 ? "<size=150%><b>" + text + "</b></size>"
+                : "<size=150%><b>" + text.Substring(0, lineEnd) + "</b></size>" + text.Substring(lineEnd);
+        }
         resultText.gameObject.SetActive(!string.IsNullOrEmpty(text));
     }
 
@@ -413,6 +426,19 @@ public class MemoryGame : MonoBehaviour
     // Bağlantı koptuğunda veya oyundan çıkıldığında başlangıç sayfasına dön
     public void ShowStartPage()
     {
+        ClearBoard();
+        ShowPage(StartPage);
+    }
+
+    // Oda kodu ve rakip bekleme ekranı
+    public void ShowLobbyPage()
+    {
+        ClearBoard();
+        ShowPage(LobbyPage != null ? LobbyPage : StartPage);
+    }
+
+    void ClearBoard()
+    {
         StopSinglePlayer();
         KillDealSequence();
         boardReady = false;
@@ -422,7 +448,6 @@ public class MemoryGame : MonoBehaviour
         deckTransform.gameObject.SetActive(false);
         SetStatus(null);
         SetResult(null);
-        ShowPage(StartPage);
     }
 
     void OnDestroy()
