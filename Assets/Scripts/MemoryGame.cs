@@ -1,4 +1,5 @@
 // MemoryGame.cs
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using DG.Tweening;
@@ -39,6 +40,9 @@ public class MemoryGame : MonoBehaviour
 
     public GameObject ResetButton;
 
+    [Header("Singleplayer")]
+    [Min(1f)] public float singlePlayerDuration = 90f;
+
     [Header("Multiplayer")]
     public MultiplayerMenu multiplayerMenu;
     [Tooltip("Oyun sırasında sıra ve skoru gösteren yazı")]
@@ -51,10 +55,20 @@ public class MemoryGame : MonoBehaviour
     private bool boardReady;
     private string statusMessage;
 
-    // Oyun sadece iki oyunculu online oturumda oynanır
     private NetworkMemorySession session;
+    private MemoryRules singlePlayerRules;
+    private Coroutine singlePlayerCheck;
+    private Coroutine singlePlayerTimeout;
+    private bool singlePlayerActive;
+    private bool singlePlayerResolving;
+    private bool singlePlayerWon;
+    private double singlePlayerDeadline;
+    private float remainingSeconds;
+    private int displayedSeconds = -1;
 
     public bool IsOnline => session != null;
+    public bool IsSinglePlayer => singlePlayerRules != null;
+    public float RemainingSeconds => remainingSeconds;
 
     // Tüm kartların dağıtılması için geçen süre
     public float DealTotalDuration => ElementNumber / 2 * 2 * (dealDuration + dealStagger);
@@ -65,11 +79,124 @@ public class MemoryGame : MonoBehaviour
         SetResult(null);
     }
 
+    void Update()
+    {
+        UpdateSinglePlayerTimer();
+    }
+
+    public void StartSinglePlayerTimed()
+    {
+        if (multiplayerMenu != null && multiplayerMenu.IsSessionRunning) return;
+        StopSinglePlayer();
+        session = null;
+        singlePlayerRules = new MemoryRules(1);
+        singlePlayerRules.StartRound(MemoryRules.CreateLayout(ElementNumber, new System.Random()), 0);
+        remainingSeconds = Mathf.Max(1f, singlePlayerDuration);
+        singlePlayerActive = true;
+        displayedSeconds = -1;
+        SetResult(null);
+        BuildBoard(singlePlayerRules.Layout);
+    }
+
+    void UpdateSinglePlayerTimer()
+    {
+        if (!singlePlayerActive || !boardReady || singlePlayerWon) return;
+        remainingSeconds = Mathf.Max(0f, (float)(singlePlayerDeadline - Time.unscaledTimeAsDouble));
+        UpdateSinglePlayerStatus();
+        if (remainingSeconds <= 0f) FinishSinglePlayer(false);
+    }
+
+    void UpdateSinglePlayerStatus(bool force = false)
+    {
+        if (singlePlayerRules == null) return;
+        int seconds = Mathf.CeilToInt(remainingSeconds);
+        if (!force && seconds == displayedSeconds) return;
+        displayedSeconds = seconds;
+        SetStatus($"Time {seconds / 60:00}:{seconds % 60:00}  |  Pairs {singlePlayerRules.Scores[0]}/{singlePlayerRules.Layout.Length / 2}");
+    }
+
+    void RevealSinglePlayer(int index)
+    {
+        UpdateSinglePlayerTimer();
+        if (!singlePlayerActive || singlePlayerResolving || !singlePlayerRules.CanReveal(0, index)) return;
+        singlePlayerRules.Reveal(index);
+        ShowFront(index);
+        if (singlePlayerRules.RevealedCount == 1)
+        {
+            singlePlayerTimeout = StartCoroutine(HideSinglePlayerCard());
+        }
+        else
+        {
+            if (singlePlayerTimeout != null) StopCoroutine(singlePlayerTimeout);
+            singlePlayerTimeout = null;
+            // The second click decides the match. A final pair selected before zero wins,
+            // even if its visual feedback finishes after the countdown.
+            var result = singlePlayerRules.ResolvePair();
+            singlePlayerWon = singlePlayerRules.IsFinished;
+            singlePlayerResolving = true;
+            singlePlayerCheck = StartCoroutine(ResolveSinglePlayerPair(result));
+            UpdateSinglePlayerStatus(true);
+        }
+        RefreshInteractable();
+    }
+
+    IEnumerator HideSinglePlayerCard()
+    {
+        yield return new WaitForSecondsRealtime(firstRevealTimeout);
+        singlePlayerTimeout = null;
+        if (singlePlayerActive && singlePlayerRules.RevealedCount == 1)
+            ShowBack(singlePlayerRules.HideSingle());
+        RefreshInteractable();
+    }
+
+    IEnumerator ResolveSinglePlayerPair(MemoryRules.PairResult result)
+    {
+        yield return new WaitForSecondsRealtime(checkDelay);
+        singlePlayerCheck = null;
+        if (!singlePlayerActive) yield break;
+        ApplyPairResult(result.First, result.Second, result.Matched);
+        singlePlayerResolving = false;
+        if (singlePlayerWon) FinishSinglePlayer(true);
+        else RefreshInteractable();
+    }
+
+    void FinishSinglePlayer(bool won)
+    {
+        singlePlayerActive = false;
+        StopSinglePlayerCoroutines();
+        RefreshInteractable();
+        SetStatus(null);
+        int seconds = Mathf.CeilToInt(remainingSeconds);
+        SetResult((won ? "You win!" : "Time's up!") +
+            $"\nPairs {singlePlayerRules.Scores[0]}/{singlePlayerRules.Layout.Length / 2}" +
+            (won ? $"  |  Time left {seconds / 60:00}:{seconds % 60:00}" : ""));
+        ShowFinish();
+    }
+
+    void StopSinglePlayerCoroutines()
+    {
+        if (singlePlayerCheck != null) StopCoroutine(singlePlayerCheck);
+        if (singlePlayerTimeout != null) StopCoroutine(singlePlayerTimeout);
+        singlePlayerCheck = null;
+        singlePlayerTimeout = null;
+        singlePlayerResolving = false;
+    }
+
+    void StopSinglePlayer()
+    {
+        StopSinglePlayerCoroutines();
+        singlePlayerRules = null;
+        singlePlayerActive = false;
+        singlePlayerWon = false;
+    }
+
     // Yeniden başlatma isteği; tur iki oyuncu da isteyince başlar
     public void ResetGame()
     {
         if (IsOnline)
             session.RequestRestart();
+        else if (IsSinglePlayer)
+            StartSinglePlayerTimed();
     }
 
     void BuildBoard(int[] layout)
@@ -120,20 +247,19 @@ public class MemoryGame : MonoBehaviour
             RectTransform cardRect = card.GetComponent<RectTransform>();
 
             dealSequence.AppendCallback(() => {
-                // Deste pozisyonundan kart pozisyonuna git
                 PlayCardDealSound();
-
                 dealCardTransform.position = deckTransform.position;
-                dealCardTransform.DORotateQuaternion(cardRect.rotation, dealDuration);
-                dealCardTransform.DOMove(cardRect.position, dealDuration)
-                    .OnComplete(() => {
-                        // Kart görünür hale getir
-                        if (card != null && card.CurrentState == GridElement.State.Empty)
-                            card.ChangeStatusAsBack();
-                    });
             });
-
-            dealSequence.AppendInterval(dealDuration + dealStagger);
+            // Keep the card movement inside the sequence so its completion and cancellation
+            // include every card, even when several animation steps fall within one frame.
+            dealSequence.Append(dealCardTransform.DOMove(cardRect.position, dealDuration)
+                .From(deckTransform.position)
+                .OnComplete(() => {
+                    if (card != null && card.CurrentState == GridElement.State.Empty)
+                        card.ChangeStatusAsBack();
+                }));
+            dealSequence.Join(dealCardTransform.DORotateQuaternion(cardRect.rotation, dealDuration));
+            dealSequence.AppendInterval(dealStagger);
         }
 
         dealSequence.OnComplete(() => {
@@ -141,7 +267,12 @@ public class MemoryGame : MonoBehaviour
             deckTransform.gameObject.SetActive(false);
             ResetButton.SetActive(true);
             boardReady = true;
-            SetStatus(statusMessage);
+            if (singlePlayerActive)
+            {
+                singlePlayerDeadline = Time.unscaledTimeAsDouble + remainingSeconds;
+                UpdateSinglePlayerStatus(true);
+            }
+            else SetStatus(statusMessage);
             RefreshInteractable();
         });
     }
@@ -153,7 +284,7 @@ public class MemoryGame : MonoBehaviour
             dealSequence.Kill();
             dealSequence = null;
         }
-        dealCardTransform.DOKill();
+        if (dealCardTransform != null) dealCardTransform.DOKill();
     }
 
     void PlayCardDealSound()
@@ -176,8 +307,11 @@ public class MemoryGame : MonoBehaviour
 
     public void OnCardClicked(GridElement card)
     {
-        if (boardReady && IsOnline && session.CanLocalPlayerReveal)
+        if (!boardReady || card == null || !IsValidCard(card.Index) || cards[card.Index] != card) return;
+        if (IsOnline && session.CanLocalPlayerReveal)
             session.RequestReveal(card.Index);
+        else if (IsSinglePlayer)
+            RevealSinglePlayer(card.Index);
     }
 
     // --- Görsel güncellemeler ---
@@ -221,7 +355,8 @@ public class MemoryGame : MonoBehaviour
     // Sadece kapalı kartlara ve sırası gelen oyuncuya izin ver
     public void RefreshInteractable()
     {
-        bool allow = boardReady && IsOnline && session.CanLocalPlayerReveal;
+        bool allow = boardReady && (IsOnline ? session.CanLocalPlayerReveal :
+            singlePlayerActive && !singlePlayerResolving && !singlePlayerWon);
 
         foreach (var card in cards)
             card.button.interactable = allow && card.CurrentState == GridElement.State.Back;
@@ -259,6 +394,7 @@ public class MemoryGame : MonoBehaviour
 
     public void AttachSession(NetworkMemorySession networkSession)
     {
+        StopSinglePlayer();
         session = networkSession;
     }
 
@@ -277,6 +413,7 @@ public class MemoryGame : MonoBehaviour
     // Bağlantı koptuğunda veya oyundan çıkıldığında başlangıç sayfasına dön
     public void ShowStartPage()
     {
+        StopSinglePlayer();
         KillDealSequence();
         boardReady = false;
         foreach (Transform child in Parent)
@@ -286,6 +423,12 @@ public class MemoryGame : MonoBehaviour
         SetStatus(null);
         SetResult(null);
         ShowPage(StartPage);
+    }
+
+    void OnDestroy()
+    {
+        StopSinglePlayerCoroutines();
+        KillDealSequence();
     }
 
     public void QuitGame()

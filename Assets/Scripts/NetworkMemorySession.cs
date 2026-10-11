@@ -9,7 +9,7 @@ public class NetworkMemorySession : NetworkBehaviour
     public const int MaxPlayers = 2;
     const ulong NoPlayer = ulong.MaxValue;
 
-    // Slot 0: host, slot 1: ikinci oyuncu
+    // Host participates as player 0. A dedicated server leaves both slots for clients.
     private readonly NetworkVariable<ulong> player0 = new NetworkVariable<ulong>(NoPlayer);
     private readonly NetworkVariable<ulong> player1 = new NetworkVariable<ulong>(NoPlayer);
     private readonly NetworkVariable<int> currentTurn = new NetworkVariable<int>(0);
@@ -31,7 +31,7 @@ public class NetworkMemorySession : NetworkBehaviour
     private Coroutine checkCoroutine;
     private Coroutine timeoutCoroutine;
 
-    public int LocalSlot => SlotOf(NetworkManager.LocalClientId);
+    public int LocalSlot => IsClient && NetworkManager != null ? SlotOf(NetworkManager.LocalClientId) : -1;
     public bool IsMyTurn => roundActive.Value && LocalSlot >= 0 && currentTurn.Value == LocalSlot;
     public bool CanLocalPlayerReveal => IsMyTurn && localRevealCount < 2;
 
@@ -61,6 +61,8 @@ public class NetworkMemorySession : NetworkBehaviour
         restartVote0.OnValueChanged += OnBoolChanged;
         restartVote1.OnValueChanged += OnBoolChanged;
 
+        if (IsClient) game.AttachSession(this);
+
         if (IsServer)
         {
             NetworkManager.OnClientConnectedCallback += OnClientConnected;
@@ -70,12 +72,13 @@ public class NetworkMemorySession : NetworkBehaviour
             TryStartRound();
         }
 
-        game.AttachSession(this);
         RefreshStatus();
     }
 
     public override void OnNetworkDespawn()
     {
+        StopServerCoroutines();
+        rules = null;
         player0.OnValueChanged -= OnSlotChanged;
         player1.OnValueChanged -= OnSlotChanged;
         currentTurn.OnValueChanged -= OnIntChanged;
@@ -162,6 +165,7 @@ public class NetworkMemorySession : NetworkBehaviour
         // Kartlar dağıtılırken seçim yapılamaz
         inputUnlockTime = Time.time + game.DealTotalDuration;
         StartRoundRpc(rules.Layout);
+        Debug.Log("[SelfHosted] Round started with two players.");
     }
 
     void StopServerCoroutines()
@@ -230,6 +234,7 @@ public class NetworkMemorySession : NetworkBehaviour
             roundActive.Value = false;
             roundFinished.Value = true;
             GameOverRpc();
+            Debug.Log($"[SelfHosted] Round finished. Score: {rules.Scores[0]} - {rules.Scores[1]}");
         }
     }
 
@@ -303,7 +308,7 @@ public class NetworkMemorySession : NetworkBehaviour
 
     void RefreshStatus()
     {
-        if (game == null || !IsSpawned) return;
+        if (game == null || !IsSpawned || !IsClient) return;
 
         int mySlot = LocalSlot;
         int myScore = mySlot == 1 ? score1.Value : score0.Value;

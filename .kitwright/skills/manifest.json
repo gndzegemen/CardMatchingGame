@@ -1,6 +1,7 @@
 {
     "platforms": [
-        "claude"
+        "claude",
+        "codex"
     ],
     "skillVersions": [
         {

@@ -36,6 +36,6 @@ This section is managed by KitWright MCP for Unity for Claude Code. Everything b
 
 ## Project
 
-- Project root: `C:\WORK\_GAME\Unity\MobileGame`
-- Product name: `a`
+- Project root: `C:\WORK\_GAME\Unity\CardMatchingGame`
+- Product name: `Card Matching`
 <!-- /KitWright Unity managed project skills -->
